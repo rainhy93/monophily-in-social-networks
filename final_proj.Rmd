@@ -1,0 +1,461 @@
+---
+title: "Homophily and Monophily of Internet Industry Partnerships"
+author: "Yu Huang"
+date: "12/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Altenburger and Ugander (2018) introduced the concept of “monophily” in their paper to represent the phenomenon of individuals with extreme preferences for a particular attribute that is possibly unrelated with their own attribute. As a result, friends-of-friends are more likely to be similar. While “homophily” focuses on a bias in attribute preferences for similar others, “monophily” considers the excess variance/overdispersion in attribute preferences. They define this excess variance as observing more variance than expected under a statistical model of interaction preferences with homophily as a bias parameter. Built on this base model, an additional parameter $\phi$ was introduced to account for the extra variance. The extended model can simultaneously characterize homophily and monophily observed in a network. They investigated 4 different empirical social networks where monophily might be present – gender in FB100 networks (Traud et al., 2012) and Add Health networks (Resnick et al., 1997), which may exhibit weak homophily, and political affiliations of online blogs (Adamic & Glance, 2005) and contact network of terrorist group members and non-members in the Noordin Top Terrorist Network (Roberts & Everton, 2011), which are known to be highly homophilous. They applied 4 node classification methods to predict node attribute in each of the four networks. 2 classification methods, the one-hop MV classifier and the ZGL method, are based on a node’s one-hop (immediate) relations, so homophily in the networks is key to classification performance. The other 2 methods, the two-hop MV classifier and the LINK-logistic regression, capitalize on two-hop (neighbor of neighbor) relations, where monophily in the networks could contribute to prediction of node attributes. They showed that the two-hop methods (two-hop MV and LINK) performed consistently better than one-hop ones in predicting gender on Facebook networks, and as well as the other methods in predicting political affiliation. Here, I apply their statistical model to a network involving company partnerships in the internet industry to estimate its homophily and monophily parameters. Then, I perform node classification of company type using the 4 classification methods and compare the relative performance of one-hop and two-hop methods.
+
+***
+
+## Methods
+
+### Data
+
+The data set I used was collected from [link](https://networkrepository.com/). It contains a partnership network of 219 companies, which is a subset of 250 companies in the internet industry during the period from 1998 to 2001. In the network, each node represents a company that competes in the internet industry. Besides, each node has an attribute associated with it, showing the company's type, and has one of the three possible values: 1 for content, 2 for infrastructure, and 3 for commerce. There is an edge between two companies if they have announced a joint venture, strategic alliance or other types of partnership.   
+
+
+install and load packages
+```{r, include=FALSE}
+library(MASS)
+library(dispmod)
+library(igraph)
+library(statnet)
+library(intergraph)
+#install.packages("reticulate")
+library(reticulate)
+use_python("D:/Python/Python39")
+library(devtools)
+library(ggplot2)
+
+```
+
+load internet-industry-partnerships data
+
+```{r}
+setwd("E:/work&study/study/PhD/Psych 496/project/data/internet-industry-partnerships")
+net_partners_edges = read.table("internet-industry-partnerships_edges.txt", sep = ",", header = FALSE)
+net_partners_node_labels = read.table("internet-industry-partnerships_node_labels.txt", header = FALSE)
+```
+
+create graph from data and preprocess
+
+```{r}
+net_partners_edges = as.matrix(net_partners_edges)
+net_partners = graph_from_edgelist(net_partners_edges, directed = FALSE)
+net_partners_adj_mat = as_adjacency_matrix(net_partners, type = "both", sparse = FALSE)
+
+net_partners = asNetwork(net_partners)
+set.vertex.attribute(net_partners, "type", value = net_partners_node_labels$V1)
+get.vertex.attribute(net_partners, "type")
+
+components(net_partners)  # there is only 1 component in this dataset
+
+sum(degree(net_partners) == 0) # no 0-degree nodes
+
+#remove nodes w/o label
+sum(get.vertex.attribute(net_partners, "type")==0)  # all nodes have labels
+
+#create a label vector
+net_type = get.vertex.attribute(net_partners,"type")
+```
+
+### Network visualization
+
+```{r, fig.height=10, fig.width=10}
+node_cols = c("red", "green", "blue")
+{gplot(net_partners, vertex.col = node_cols[net_type], edge.col = "gray", gmode = "graph")
+par(margin(t=1, r=2, b=1, l=1))
+legend(x="topleft", bty = "n",
+       legend = c("content","infrastructure", "commerce"),
+       fill = node_cols, 
+       title = "Internet Industry Partnerships")}
+```
+
+### Histogram of in-class preference for each type
+
+```{r}
+net_content_label = 1
+net_infra_label = 2
+net_commerce_label = 3
+
+#content
+content_nodes = get.vertex.attribute(net_partners, "type") == net_content_label
+in_content_degree = net_partners_adj_mat[content_nodes,] %*% matrix(as.numeric(net_type == net_content_label))
+in_content_degree = as.matrix(in_content_degree)
+total_content_degree = degree(net_partners, nodes = which(net_partners%v%"type"==net_content_label), gmode="graph")
+h_content = sum(in_content_degree) / sum(total_content_degree)  #homophily index for content
+
+hist(in_content_degree/total_content_degree, freq = FALSE, breaks = 25, 
+     col = 'red', border = "white",
+     xlab = "proportion of in-class neighbors", 
+     ylab = "normalized frequency", main = "content companies")
+
+#infrastructure
+infra_nodes = get.vertex.attribute(net_partners, "type") == net_infra_label
+in_infra_degree = net_partners_adj_mat[infra_nodes,] %*% matrix(as.numeric(net_type == net_infra_label))
+in_infra_degree = as.matrix(in_infra_degree)
+total_infra_degree = degree(net_partners, nodes = which(net_partners%v%"type"==net_infra_label), gmode="graph")
+h_infra = sum(in_infra_degree) / sum(total_infra_degree)  #homophily index for infrastructure
+
+hist(in_infra_degree/total_infra_degree, freq = FALSE,
+     breaks = 25, col = 'black', border = "white",
+     xlab = "proportion of in-class neighbors", ylab = "frequency", main = "infrastructure companies")
+
+##commerce
+commerce_nodes = get.vertex.attribute(net_partners,"type") == net_commerce_label
+in_commerce_degree = net_partners_adj_mat[commerce_nodes,] %*% matrix(as.numeric(net_type == net_commerce_label))
+in_commerce_degree = as.matrix(in_commerce_degree)
+total_commerce_degree = degree(net_partners, nodes = which(net_partners%v%"type"==net_commerce_label), gmode="graph")
+h_commerce = sum(in_commerce_degree) / sum(total_commerce_degree)  #homophily index for commerce
+
+hist(in_commerce_degree/total_commerce_degree, freq = FALSE,
+     breaks = 25, col = 'blue', border = "white",
+     xlab = "proportion of in-class neighbors", ylab = "frequency", main = "commerce companies")
+```
+
+Different company types have different patterns of preference for in-class partnerships. Infrastructure companies tend to become partner with other infrastructure companies, whereas commerce companies tend to partner with non-commerce companies. Content companies have two extremes - some prefer to partner with other content counterparts, while some prefer to partner with non-content companies.
+
+### Comparison of empirical distribution (filled bars) with a simulated null distribution (solid lines) of in-class preference, for each type
+
+```{r, message=FALSE}
+set.seed(42)
+n_iter = 100000
+
+#content
+mc_content = matrix(nrow = n_iter, ncol = length(total_content_degree))
+for (i in 1:length(total_content_degree)){
+  mc_content[,i] = rbinom(n=n_iter, size=total_content_degree[i], prob = h_content) / total_content_degree[i]
+}
+mc_content_final = as.vector(mc_content)
+
+#compare w/ empirical dist
+try({hist(in_content_degree/total_content_degree, freq = 0, breaks = 25, 
+     col = adjustcolor("red", alpha.f = 0.25), border = "white",
+     ylim = c(0,10),
+     xlab = "proportion of in-class neighbors", 
+     ylab = "normalized frequency", main = "content companies")+
+hist(mc_content_final, breaks = 25, freq = 0,
+     col = adjustcolor("white",alpha.f = 0.25), border = "red",
+     add=TRUE)}, silent = TRUE)
+
+#infra
+mc_infra = matrix(nrow = n_iter, ncol = length(total_infra_degree))
+for (i in 1:length(total_infra_degree)){
+  mc_infra[,i] = rbinom(n=n_iter, size=total_infra_degree[i], prob = h_infra) / total_infra_degree[i]
+}
+mc_infra_final = as.vector(mc_infra)
+
+#compare w/ empirical dist
+try({hist(in_infra_degree/total_infra_degree, freq = FALSE, breaks = 25, 
+     col = adjustcolor("black", alpha.f = 0.25), border = "white",
+     ylim = c(0,10),
+     xlab = "proportion of in-class neighbors", 
+     ylab = "normalized frequency", main = "infrastructure companies") + 
+  hist(mc_infra_final, breaks = 25, freq = FALSE,
+     col = adjustcolor("white", alpha.f = 0.25), border = "black",
+     add=TRUE)
+}, silent = TRUE)
+
+##commerce
+mc_commerce = matrix(nrow = n_iter, ncol = length(total_commerce_degree))
+for (i in 1:length(total_commerce_degree)){
+  mc_commerce[,i] = rbinom(n=n_iter, size=total_commerce_degree[i], prob = h_commerce) / total_commerce_degree[i]
+}
+mc_commerce_final = as.vector(mc_commerce)
+
+#compare w/ empirical dist
+try({hist(in_commerce_degree/total_commerce_degree, freq = FALSE, breaks = 25, 
+     col = adjustcolor("blue", alpha.f = 0.25), border = "white",
+     ylim = c(0,15),
+     xlab = "proportion of in-class neighbors", 
+     ylab = "normalized frequency", main = "commerce companies") + 
+  hist(mc_commerce_final, breaks = 25, freq = FALSE,
+     col = adjustcolor("white", alpha.f = 0.25), border = "black",
+     add=TRUE)
+}, silent = TRUE)
+
+```
+
+For each company type, especially infrastructure and content, the empirical distribution (filled bars) of preferences for within-type partnerships are more dispersed (less concentrated) than the simulated, homophily-only null distribution (solid lines) (see **Appendix** for details).
+
+
+### Homophily index and p value for each type
+
+```{r}
+compute_homophily_pvalue = function(deg_same, deg_different){
+    mod <- glm(cbind(deg_same, deg_different) ~ 1, family=binomial(logit))
+    return(coef(summary(mod))[,4])
+}
+
+num_labels = length(unique(get.vertex.attribute(net_partners,"type")))
+class_labels = sort(unique(get.vertex.attribute(net_partners,"type")))
+
+homophily_index_by_class = matrix(nrow=1, ncol=num_labels)
+homophily_pvalue_by_class = matrix(nrow=1, ncol=num_labels)
+
+for (j in 1:num_labels){
+  ## among companies of type 'j' -- find # of their partners also of type 'j'
+  same_j = net_partners_adj_mat[get.vertex.attribute(net_partners,"type")==class_labels[j],]  %*% matrix(as.numeric(get.vertex.attribute(net_partners,"type") == class_labels[j]))
+   ## among companies of type 'j' -- find # of their partners not of type 'j'
+  different_j = net_partners_adj_mat[get.vertex.attribute(net_partners,"type")==class_labels[j],] %*% matrix(as.numeric(get.vertex.attribute(net_partners, "type") != class_labels[j]))
+  
+  r_same = as.matrix(same_j)
+  r_different = as.matrix(different_j)
+  
+  homophily_index_by_class[j] = sum(r_same)/sum(r_same + r_different)
+  homophily_pvalue_by_class[j] = compute_homophily_pvalue(r_same, r_different)
+}
+
+
+homophily_index_by_class
+homophily_pvalue_by_class
+```
+Each type has a homophily index with significant a p-value. Infrastructure companies have the highest homophily index value (0.837), content companies the second (0.378), and commerce companies have the lowest (0.185).
+
+To account for the extra variation of in-class preferences, as demonstrated by the comparisons of empirical distributions with homophily-only null distributions above, they extend the model to include another parameter, $\phi$, the monophily index, into the model (see **Appendix** for details). Below, I compute the monophily index for each class. 
+
+
+### Monophily index for each type
+
+```{r}
+compute_overdispersion = function(deg_same, deg_different){
+  mod = glm(cbind(deg_same, deg_different) ~ 1, family = binomial(logit))
+  mod.disp = glm.binomial.disp(mod, maxit=50, verbose=FALSE)
+  mod.disp$dispersion
+}
+
+monophily_index_by_class = matrix(nrow=1, ncol=num_labels)
+
+for (j in 1:num_labels){
+  ## among companies of type 'j' -- find # of their partners also of type 'j'
+  same_j = net_partners_adj_mat[get.vertex.attribute(net_partners,"type")==class_labels[j],]  %*% matrix(as.numeric(get.vertex.attribute(net_partners,"type") == class_labels[j]))
+   ## among companies of type 'j' -- find # of their partners not of type 'j'
+  different_j = net_partners_adj_mat[get.vertex.attribute(net_partners,"type")==class_labels[j],] %*% matrix(as.numeric(get.vertex.attribute(net_partners, "type") != class_labels[j]))
+  
+  r_same = as.matrix(same_j)
+  r_different = as.matrix(different_j)
+  
+  monophily_index_by_class[j] = compute_overdispersion(r_same, r_different)
+}
+
+monophily_index_by_class
+```
+
+Each company type has a monophily index greater than 0, indicating there is excess variation of within-type partnership preferences for each type. Content companies have a especially high value - evidence for great variance of in-class preference as illustrated in the figure.
+
+To examine the effect of monophily on the performance of different inference methods for node attribute, they employed 4 classification models and categorized them based on the neighborhood relationships they can exploit for classification, either using 1-hop (neighbor) or two-hop (neighbor-of-neighbor) relations. The classifiers based on a node's 1-hop relations are the 1-hop majority vote (1-hop MV) classifier (Macskassy & Provost, 2007) and the Zhu, Ghahramani and Lafferty (ZGL) method (Zhu et al., 2003). 1-hop MV capitalizes on similarities between connected nodes. ZGL can be viewed as an iterated/semi-supervised adaptation of 1-hop MV. 
+The methods built on 2-hop relations are the 2-hop majority vote (MV) classifier and the LINK-logistic regression (Zheleva & Getoor, 2009). 2-hop MV
+builds on the relationship between a node and its 2-hop neighbors. LINK uses labeled nodes to fit a regularized logistic regression model by having rows of the adjacency matrix as binary feature vectors, performing classification based on these features. 
+
+Below, I perform the 4 classification methods on the Internet Industry Partnerships data set.
+I use the proportion of unlabeled nodes as the proportion of data used for the testing data set. By varying the proportion of unlabeled data, I am able to compare the prediction performance of each model in different situations - when training data set is large or small. Like the authors, I use the weighted AUC score as my evaluation measure. AUC (area under the curve) is a common measure for summarizing receiver operating characteristic (ROC) curves across a range of decision thresholds and is frequently used for evaluating classifier performance in networks. For each model and each proportion of unlabeled data, I run 100-fold cross-validation on the training data and use the mean of the weighted AUC scores as my final score. 
+
+
+### Comparison of 1-hop vs. 2-hop classifiers
+
+#### 1-hop MV
+
+Let's try calling the model created in Python from R.
+```{r, include=FALSE}
+setwd("E:/work&study/study/PhD/Psych 496/project/homophily_monophily_NHB-master/code/functions")
+reticulate::source_python('E:/work&study/study/PhD/Psych 496/project/homophily_monophily_NHB-master/code/functions/python_libraries.py')
+reticulate::source_python('E:/work&study/study/PhD/Psych 496/project/homophily_monophily_NHB-master/code/functions/majority_vote.py')
+reticulate::source_python('E:/work&study/study/PhD/Psych 496/project/homophily_monophily_NHB-master/code/functions/ZGL.py')
+reticulate::source_python('E:/work&study/study/PhD/Psych 496/project/homophily_monophily_NHB-master/code/functions/LINK.py')
+reticulate::source_python('E:/work&study/study/PhD/Psych 496/project/homophily_monophily_NHB-master/code/functions/benchmark_classifier.py')
+```
+
+```{python, warning=FALSE}
+percent_initially_unlabelled = [0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1]
+percent_initially_labelled = np.subtract(1, percent_initially_unlabelled)
+
+mean_wt_auc_mv_net, se_wt_auc_mv_net = majority_vote_modified(percent_initially_unlabelled, np.array(r.net_type), np.array(r.net_partners_adj_mat), 'stratified')
+```
+
+#### ZGL (1-hop based)
+```{python}
+mean_wt_auc_zgl_net,se_wt_auc_zgl_net = ZGL_finalized(np.array(r.net_partners_adj_mat),np.array(r.net_type),percent_initially_unlabelled, 'stratified')
+```
+
+#### 2-hop MV
+```{r}
+net_partners_adj_mat_sq = net_partners_adj_mat %*% net_partners_adj_mat
+diag(net_partners_adj_mat_sq) = 0 ## remove self-loops
+```
+
+```{python, warning=FALSE}
+mean_wt_auc_mv2_net,se_wt_auc_mv2_net = majority_vote_modified(percent_initially_unlabelled, np.array(r.net_type), np.array(r.net_partners_adj_mat_sq), 'stratified')
+```
+
+#### LINK (2-hop based)
+```{python, warning=FALSE}
+mean_wt_auc_link_net,se_wt_auc_link_net = LINK(percent_initially_unlabelled, np.array(r.net_type), np.array(r.net_partners_adj_mat), clf = linear_model.LogisticRegression(penalty='l2',solver='lbfgs',C=1), 
+cv_setup='stratified') 
+```
+
+#### baseline classifier
+```{python}
+mean_wt_auc_baseline_net,se_wt_auc_baseline_net = random_classifier(np.array(r.net_partners_adj_mat),np.array(r.net_type),percent_initially_unlabelled, 'stratified')
+```
+
+***
+
+## Results
+
+Let's plot the mean and standard deviation of scores gained by each classifier against percent of nodes initially labeled.
+
+```{python}
+# first, convert lists to arrays
+def list_to_array(l):
+  return np.array(l)
+
+mean_wt_auc_mv_net = list_to_array(mean_wt_auc_mv_net)
+se_wt_auc_mv_net = list_to_array(se_wt_auc_mv_net)
+mean_wt_auc_zgl_net = list_to_array(mean_wt_auc_zgl_net)
+se_wt_auc_zgl_net = list_to_array(se_wt_auc_zgl_net)
+mean_wt_auc_mv2_net = list_to_array(mean_wt_auc_mv2_net)
+se_wt_auc_mv2_net = list_to_array(se_wt_auc_mv2_net)
+mean_wt_auc_link_net = list_to_array(mean_wt_auc_link_net)
+se_wt_auc_link_net = list_to_array(se_wt_auc_link_net)
+mean_wt_auc_baseline_net = list_to_array(mean_wt_auc_baseline_net)
+se_wt_auc_baseline_net = list_to_array(se_wt_auc_baseline_net)
+
+```
+
+```{r, fig.height=8, fig.width=10}
+df_wt_auc = data.frame(x = py$percent_initially_labelled,
+                         baseline_mean = py$mean_wt_auc_baseline_net,
+                         baseline_se = py$se_wt_auc_baseline_net,
+                         mv_mean = py$mean_wt_auc_mv_net,
+                         mv_se = py$se_wt_auc_mv_net,
+                         zgl_mean = py$mean_wt_auc_zgl_net,
+                         zgl_se = py$se_wt_auc_zgl_net,
+                         mv2_mean = py$mean_wt_auc_mv2_net,
+                         mv2_se = py$se_wt_auc_mv2_net,
+                         link_mean = py$mean_wt_auc_link_net,
+                         link_se = py$se_wt_auc_link_net)
+
+
+p = ggplot(data = df_wt_auc, aes(x=x*100))+
+  
+  geom_point(aes(y=baseline_mean), color="gray", size=2)+
+  geom_errorbar(aes(y=baseline_mean, ymin=baseline_mean-baseline_se, ymax=baseline_mean+baseline_se), color="gray", width=1)+
+  
+  geom_point(aes(y=mv_mean), color = "red", size=2)+
+  geom_errorbar(aes(y=mv_mean, ymin=mv_mean-mv_se, ymax=mv_mean+mv_se),
+                color="red", width=1)+
+  
+  geom_point(aes(y=zgl_mean), color="orange", size=2)+
+  geom_errorbar(aes(y=zgl_mean, ymin=zgl_mean-zgl_se, ymax=zgl_mean+zgl_se),color="orange", width=1)+
+
+  geom_point(aes(y=mv2_mean), color = "green4", size=2)+
+  geom_errorbar(aes(y=mv2_mean, ymin=mv2_mean-mv2_se, ymax=mv2_mean+mv2_se),color="green4", width=1)+
+  
+  geom_point(aes(y=link_mean), color = "navy", size=2)+
+  geom_errorbar(aes(y=link_mean, ymin=link_mean-link_se, 
+                    ymax=link_mean+link_se),
+                color="navy", width=1)+
+  
+  labs(title = "Relative performance of 1-hop and 2-hop  classifiers",
+      subtitle = "red: 1-hop MV; orange: ZGL; green: 2-hop MV; navy: LINK; gray: baseline",
+       x = "Percent of nodes initially labelled",
+       y = "weighted AUC")
+
+p
+
+
+
+```
+
+We can observe from this plot that 1-hop models (1-hop MV and ZGL) have limited ability in predicting company type in this data set. 2-hop methods (2-hop MV and LINK) perform better, strengthening the evidence that 2-hop methods are capable of capturing more structure for classification in networks when overdispersion is present. In particular, LINK shows consistently better performance in prediction, almost across all labeled networks; and 2-hop MV outperforms 1-hop MV regardless of the percentage of labeled nodes. The result demonstrates how it is possible for overdispersion of in-class preference to account for the predictability of node attributes via 2-hop similarity in cases when homophily is weak or non-existent.
+
+***
+
+## Discussion
+
+This work reinforces Altenburger and Ugander's assertion that monophily deserves special attention when studying social network preferences. From a practical perspective, monophily has proven to be crucial to inferring missing attributes in social networks. While researchers studying social network preferences have been predominantly focusing on in-class preference bias, Altenburger and Ugander highlighted the need to simultaneously consider variability. Future work could explore more complex networks (such as nodes with more than 3 classes) and possibly consider k-hop relations (k>2) in node classification methods. 
+
+***
+
+> Appendix
+
+### Homophily
+
+The traditional homophily index of a graph (Coleman, 1958; Currarini et al., 2009) measures the
+aggregate pattern of individuals’ biases in forming friendships with
+people of their own attribute class relative to people from other classes. For an attribute class r, the homophily index $\widehat{h_r}$ with respect to class r is defined as:
+
+$\widehat{h_r}=\frac{\sum_{i\in r}d_{i,in}}{\sum_{i\in r}d_{i,in}+\sum_{i\in r}d_{i,out}}=\frac{\sum_{i\in r}d_{i,in}}{\sum_{i\in r}d_i}$       (1)
+
+where $d_i$ denotes node i's observed total degree, $d_{i,in}$ denotes its in-class degree, and $d_{i,out}$ denotes its out-class degree. Further, we let $n_r$ represent the total number of nodes with attribute r, and let N denote the population: $N=\sum_{r=1}^{k}n_r$. We assume that each node forms in-class connections with the other $n_r$ nodes with probability $p_{in,r}$ and out-class ties with the other $n_s$ nodes with probability $p_out$. Thus, each node is expected to follow the following class-specific degree distributions:
+
+$D_{i,in}|p_{in,r} \sim Binom(n_r,p_{in,r})$            (2)
+
+$D_{i,out}|p_{out}\sim\ Binom(n_s,p_{out})$             (3)
+
+$D_i|p_{in,r},p_{out}=D_{i,in}|p_{in,r}+D_{i,out}|p_{out}$       (4)
+
+where $D_{i,in}$ is a random variable describing the in-class degree, $D_{i,out}$ describes the out-class degree and $D_i$ describes the total degree of node i in class r. Note that the random variables $D_{i,in}$ and $D_{i,out}$ in equations are approximately independent, but not completely: constraints on the joint distribution of the degrees create a dependence, but this dependence
+is small for graphs of modest size or larger and we safely ignore it
+here. Then, for node i in class r, its in-class degree distribution, conditional on its total observed degree, is approximately:
+
+$D_{i,in}|{d_{i,}p}_{in,r,}p_{out}\sim\ Binom(d_{i,}\ n_rp_{in,r}/(n_rp_{in,r}+n_sp_{out})$          (5)
+
+We denote the quantity $h_r = n_rp_{in,r}/(n_rp_{in,r}+n_sp_{out})$ in the above expression as the 'homophily parameter', as it characterizes the bias for nodes to connect with similar others. By applying a logistic regression model to the degree data, we can obtain the maximum likelihood estimation (MLE) of this parameter. The logistic link is $n_rp_{in,r}/(n_rp_{in,r}+n_sp_{out})=logit^{-1}(\beta_{0r})=e^{\beta_{0r}}/(1+e^{\beta_{0r}})$. Then, the MLE of 
+
+$\beta_{0r}$ is simply ${\hat{\beta}}_{0r}=\ logit(\sum_{i\in r}d_{i,in}/\sum_{i\in r}d_i)$       (6)
+
+or equivalently ${\hat{\beta}}_{0r} = logit(\widehat{h_r})$. Thus we can see that the homophily index specified in equation (1) is precisely the MLE of the homophily parameter in the logistic regression model, and as a result, we can compute its statistical significance using the P value. 
+
+
+#### Simulation for homophily-only null distributions
+
+I compared the variance of the empirical distribution of $d_{i,in}/d_i$ across all nodes in the same class with the variance of a binomial null distribution without overdispersion. To produce a distribution of samples under the null, I simulated draws from the distribution given in equation (5) by repeatedly sampling from $Binom(d_i, \widehat{h_r})$ for each node i in class r for 100000 iterations.
+
+
+### Monophily
+
+They modeled overdispersion using a quasi-likelihood method, which bears as few assumptions as possible compared with alternative methods for estimating overdispersion. This approach allows each node i in class r to have an individual latent preference for in-class connections, $h_{i,r}$, such that $\mathbb{E}\left[h_{i,r}\right]=h_r$ and $Var[h_{i,r}]=ϕ_rh_r(1 - h_r)$ for some $\phi_r \geq 0$. This approach could be regarded as loosely hierarchical, where $h_{i,r}$ is permitted to be random. When $\phi_r =0$, there is no excess variation. And $\phi_r >0$ captures variation beyond the conventional model. $\phi_r$ is estimated by an iterative procedure: first, a null model without overdispersion is assumed; the resulting residual variation is assessed via a goodness of fit statistic (chi-squared) based on the sum of squared residuals, and $\phi_{r}$ is updated until convergence. The final $\phi_{r}$ is the estimated overdispersion.
+
+***
+
+## References
+
+Adamic, L. A., & Glance, N. (2005). The political blogosphere and the 2004 U.S. election: Divided they blog. Proceedings of the 3rd International Workshop on Link Discovery  - LinkKDD ’05, 36–43. 
+
+Altenburger, K. M., & Ugander, J. (2018). Monophily in social networks introduces similarity among friends-of-friends. Nature Human Behaviour, 2(4), 284–290. 
+
+Coleman, J. (1958). Relational Analysis: The Study of Social Organizations with Survey Methods. Human Organization, 17(4), 28–36. 
+
+Currarini, S., Jackson, M. O., & Pin, P. (2007). An Economic Model of Friendship: Homophily, Minorities and Segregation. SSRN Electronic Journal. 
+
+Macskassy, S. A., & Provost, F. (2005). Classificaiton in Networked Data: A Toolkit and a Univariate Case Study: Defense Technical Information Center. 
+
+Resnick, M. D., Bearman, P. S., Blum, R. W., Bauman, K. E., Harris, K. M., Jones, J., Tabor, J., Beuhring, T., Sieving, R. E., Shew, M., Ireland, M., Bearinger, L. H., & Udry, J. R. (1997). Protecting adolescents from harm. Findings from the National Longitudinal Study on Adolescent Health. JAMA, 278(10), 823–832. 
+
+Traud, A. L., Mucha, P. J., & Porter, M. A. (2012). Social structure of Facebook networks. Physica A: Statistical Mechanics and Its Applications, 391(16), 4165–4180. 
+Williams, L., Roberts, N., & Everton, S. (2019). Noordin Top Terrorist Network Data. 
+
+Zheleva, E., & Getoor, L. (2009). To join or not to join: The illusion of privacy in social networks with mixed public and private user profiles. Proceedings of the 18th International Conference on World Wide Web - WWW ’09, 531. 
+
+Zhu, X., Ghahramani, Z., & Lafferty, J. (2003). Semi-Supervised Learning Using Gaussian Fields and Harmonic Functions. Proc. 20th Int. Conf. Machine
+Learning 912–919
+
+
+
+
+
+
+
+
+
+
+
